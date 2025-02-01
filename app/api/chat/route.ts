@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { Message as VercelChatMessage } from 'ai';
 import { createRAGChain } from '@/utils/ragChain';
-
 import type { Document } from '@langchain/core/documents';
 import { HumanMessage, AIMessage, ChatMessage } from '@langchain/core/messages';
-import { ChatTogetherAI } from '@langchain/community/chat_models/togetherai';
+import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { type MongoClient } from 'mongodb';
 import { loadRetriever } from '../utils/vector_store';
 import { loadEmbeddingsModel } from '../utils/embeddings';
+import { HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
+
 
 export const runtime =
   process.env.NEXT_PUBLIC_VECTORSTORE === 'mongodb' ? 'nodejs' : 'edge';
@@ -25,31 +26,38 @@ const formatVercelMessages = (message: VercelChatMessage) => {
   }
 };
 
-/**
- * This handler initializes and calls a retrieval chain. It composes the chain using
- * LangChain Expression Language. See the docs for more information:
- *
- * https://js.langchain.com/docs/get_started/quickstart
- * https://js.langchain.com/docs/guides/expression_language/cookbook#conversational-retrieval-chain
- */
 export async function POST(req: NextRequest) {
   let mongoDbClient: MongoClient | undefined;
 
   try {
     const body = await req.json();
     const messages = body.messages ?? [];
+    
     if (!messages.length) {
       throw new Error('No messages provided.');
     }
+
     const formattedPreviousMessages = messages
       .slice(0, -1)
       .map(formatVercelMessages);
     const currentMessageContent = messages[messages.length - 1].content;
     const chatId = body.chatId;
 
-    const model = new ChatTogetherAI({
-      modelName: 'mistralai/Mixtral-8x7B-Instruct-v0.1',
+    // Initialize Google Gemini Pro 1.5 model
+    const model = new ChatGoogleGenerativeAI({
+      modelName: 'gemini-1.5-pro-latest',
+      apiKey: process.env.GOOGLE_API_KEY,
       temperature: 0,
+      safetySettings: [
+        {
+          category: HarmCategory.HARM_CATEGORY_HARASSMENT, // Use enum instead of string
+          threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH, // Use enum instead of string
+        },
+        {
+          category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+          threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+        },
+      ],
     });
 
     const embeddings = loadEmbeddingsModel();
@@ -65,8 +73,6 @@ export async function POST(req: NextRequest) {
       callbacks: [
         {
           handleRetrieverEnd(documents) {
-            // Extract retrieved source documents so that they can be displayed as sources
-            // on the frontend.
             resolveWithDocuments(documents);
           },
         },
@@ -86,16 +92,13 @@ export async function POST(req: NextRequest) {
     const documents = await documentPromise;
     const serializedSources = Buffer.from(
       JSON.stringify(
-        documents.map((doc) => {
-          return {
-            pageContent: doc.pageContent.slice(0, 50) + '...',
-            metadata: doc.metadata,
-          };
-        }),
+        documents.map((doc) => ({
+          pageContent: doc.pageContent.slice(0, 50) + '...',
+          metadata: doc.metadata,
+        })),
       ),
     ).toString('base64');
 
-    // Convert to bytes so that we can pass into the HTTP response
     const byteStream = stream.pipeThrough(new TextEncoderStream());
 
     return new Response(byteStream, {
@@ -105,7 +108,11 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
+    console.error('Error in RAG processing:', e);
+    return NextResponse.json(
+      { error: e.message || 'An error occurred during processing' },
+      { status: 500 },
+    );
   } finally {
     if (mongoDbClient) {
       await mongoDbClient.close();
