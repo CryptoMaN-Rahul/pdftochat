@@ -1,8 +1,8 @@
-import { TogetherAIEmbeddings } from '@langchain/community/embeddings/togetherai';
+import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai";
 
 export function loadEmbeddingsModel() {
-  return new TogetherAIEmbeddings({
-    apiKey: process.env.TOGETHER_AI_API_KEY,
-    modelName: 'togethercomputer/m2-bert-80M-8k-retrieval',
+  return new GoogleGenerativeAIEmbeddings({
+    apiKey: process.env.GOOGLE_API_KEY,
+    modelName: "models/text-embedding-004", // Default Google embedding model
   });
 }
